@@ -2,48 +2,35 @@
 #import "objc/runtime.h"
 #import "GooglePlus.h"
 
-/** Switch to Sign-In SDK.
- @date July 19, 2015
- @author Eddy Verbruggen
- */
+@implementation GooglePlus
 
-/** 
-  Updates to be more aligned with updated Android version and with Google.
- @date March 15, 2015
- @author Sam Muggleworth (PointSource, LLC)
- */
-
-// need to swap out a method, so swizzling it here
-static void swizzleMethod(Class class, SEL destinationSelector, SEL sourceSelector);
-
-@implementation AppDelegate (IdentityUrlHandling)
-
-+ (void)load {
-  swizzleMethod([AppDelegate class],
-                @selector(application:openURL:sourceApplication:annotation:),
-                @selector(identity_application:openURL:sourceApplication:annotation:));
+- (void)pluginInitialize
+{
+    NSLog(@"GooglePlus pluginInitizalize");
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(handleOpenURL:) name:CDVPluginHandleOpenURLNotification object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(handleOpenURLWithAppSourceAndAnnotation:) name:CDVPluginHandleOpenURLWithAppSourceAndAnnotationNotification object:nil];
 }
 
-/** Google Sign-In SDK
- @date July 19, 2015
- */
-- (BOOL)identity_application: (UIApplication *)application
-                     openURL: (NSURL *)url
-           sourceApplication: (NSString *)sourceApplication
-                  annotation: (id)annotation {
-    GooglePlus* gp = (GooglePlus*)[[self.viewController pluginObjects] objectForKey:@"GooglePlus"];
+- (void)handleOpenURL:(NSNotification*)notification
+{
+    // no need to handle this handler, we dont have an sourceApplication here, which is required by GIDSignIn handleURL
+}
 
-    if ([gp isSigningIn]) {
-        gp.isSigningIn = NO;
-        return [[GIDSignIn sharedInstance] handleURL:url sourceApplication:sourceApplication annotation:annotation];
-    } else {
-        // call super
-        return [self identity_application:application openURL:url sourceApplication:sourceApplication annotation:annotation];
+- (void)handleOpenURLWithAppSourceAndAnnotation:(NSNotification*)notification
+{
+    NSMutableDictionary * options = [notification object];
+
+    NSURL* url = options[@"url"];
+
+    NSString* possibleReversedClientId = [url.absoluteString componentsSeparatedByString:@":"].firstObject;
+
+    if ([possibleReversedClientId isEqualToString:self.getreversedClientId] && self.isSigningIn) {
+        self.isSigningIn = NO;
+        [[GIDSignIn sharedInstance] handleURL:url
+                            sourceApplication:options[@"sourceApplication"]
+                            annotation:options[@"annotation"]];
     }
 }
-@end
-
-@implementation GooglePlus
 
 // If this returns false, you better not call the login function because of likely app rejection by Apple,
 // see https://code.google.com/p/google-plus-platform/issues/detail?id=900
@@ -70,7 +57,7 @@ static void swizzleMethod(Class class, SEL destinationSelector, SEL sourceSelect
  */
 - (GIDSignIn*) getGIDSignInObject:(CDVInvokedUrlCommand*)command {
     _callbackId = command.callbackId;
-    NSDictionary* options = [command.arguments objectAtIndex:0];
+    NSDictionary* options = command.arguments[0];
     NSString *reversedClientId = [self getreversedClientId];
 
     if (reversedClientId == nil) {
@@ -81,19 +68,26 @@ static void swizzleMethod(Class class, SEL destinationSelector, SEL sourceSelect
 
     NSString *clientId = [self reverseUrlScheme:reversedClientId];
 
-    NSString* scopesString = [options objectForKey:@"scopes"];
-    NSString* serverClientId = [options objectForKey:@"webClientId"];
-    BOOL offline = [options objectForKey:@"offline"];
+    NSString* scopesString = options[@"scopes"];
+    NSString* serverClientId = options[@"webClientId"];
+    NSString *loginHint = options[@"loginHint"];
+    BOOL offline = [options[@"offline"] boolValue];
+    NSString* hostedDomain = options[@"hostedDomain"];
 
 
     GIDSignIn *signIn = [GIDSignIn sharedInstance];
     signIn.clientID = clientId;
 
+    [signIn setLoginHint:loginHint];
+
     if (serverClientId != nil && offline) {
       signIn.serverClientID = serverClientId;
     }
 
-    signIn.allowsSignInWithBrowser = NO; // Otherwise your app get rejected
+    if (hostedDomain != nil) {
+        signIn.hostedDomain = hostedDomain;
+    }
+
     signIn.uiDelegate = self;
     signIn.delegate = self;
 
@@ -102,8 +96,6 @@ static void swizzleMethod(Class class, SEL destinationSelector, SEL sourceSelect
         NSArray* scopes = [scopesString componentsSeparatedByString:@" "];
         [signIn setScopes:scopes];
     }
-    [signIn setAllowsSignInWithBrowser:NO]; // disabling as this may be a rejection reason for Apple
-    [signIn setAllowsSignInWithWebView:YES]; // assuming this should be fine
     return signIn;
 }
 
@@ -119,11 +111,11 @@ static void swizzleMethod(Class class, SEL destinationSelector, SEL sourceSelect
 
   if (URLTypes != nil) {
     for (NSDictionary* dict in URLTypes) {
-      NSString *urlName = [dict objectForKey:@"CFBundleURLName"];
+      NSString *urlName = dict[@"CFBundleURLName"];
       if ([urlName isEqualToString:@"REVERSED_CLIENT_ID"]) {
-        NSArray* URLSchemes = [dict objectForKey:@"CFBundleURLSchemes"];
+        NSArray* URLSchemes = dict[@"CFBundleURLSchemes"];
         if (URLSchemes != nil) {
-          return [URLSchemes objectAtIndex:0];
+          return URLSchemes[0];
         }
       }
     }
@@ -170,7 +162,9 @@ static void swizzleMethod(Class class, SEL destinationSelector, SEL sourceSelect
                        @"accessToken"     : accessToken,
                        @"refreshToken"    : refreshToken,
                        @"userId"          : userId,
-                       @"displayName"     : user.profile.name ? : [NSNull null],
+                       @"displayName"     : user.profile.name       ? : [NSNull null],
+                       @"givenName"       : user.profile.givenName  ? : [NSNull null],
+                       @"familyName"      : user.profile.familyName ? : [NSNull null],
                        @"imageUrl"        : imageUrl ? imageUrl.absoluteString : [NSNull null],
                        };
 
@@ -194,18 +188,4 @@ static void swizzleMethod(Class class, SEL destinationSelector, SEL sourceSelect
     [self.viewController dismissViewControllerAnimated:YES completion:nil];
 }
 
-#pragma mark Swizzling
-
 @end
-
-static void swizzleMethod(Class class, SEL destinationSelector, SEL sourceSelector) {
-  Method destinationMethod = class_getInstanceMethod(class, destinationSelector);
-  Method sourceMethod = class_getInstanceMethod(class, sourceSelector);
-
-  // If the method doesn't exist, add it.  If it does exist, replace it with the given implementation.
-  if (class_addMethod(class, destinationSelector, method_getImplementation(sourceMethod), method_getTypeEncoding(sourceMethod))) {
-    class_replaceMethod(class, destinationSelector, method_getImplementation(destinationMethod), method_getTypeEncoding(destinationMethod));
-  } else {
-    method_exchangeImplementations(destinationMethod, sourceMethod);
-  }
-}
